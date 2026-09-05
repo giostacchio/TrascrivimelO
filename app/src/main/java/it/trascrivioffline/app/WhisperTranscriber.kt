@@ -7,6 +7,7 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import java.io.RandomAccessFile
+import java.util.Locale
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
@@ -19,9 +20,11 @@ internal data class TranscriptChunk(
 )
 
 /**
- * v1.4: direct offline transcription with a current sherpa-onnx Whisper model.
- * The recording is decoded to mono PCM 16 kHz and sent to Whisper in bounded
- * chunks. Speaker diarization is deliberately not part of the ASR path.
+ * v1.5: direct offline transcription with guarded input.
+ * Audio is already decoded to real mono PCM16/16 kHz by AudioDecoder.
+ * We do not amplify weak/noisy chunks before Whisper: doing that can turn
+ * background noise into invented speech. Very quiet chunks are skipped and
+ * obvious repeated-output hallucinations are rejected.
  */
 internal class WhisperTranscriber(private val assets: AssetManager) {
     companion object {
@@ -29,7 +32,7 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
         private const val CHUNK_SECONDS = 30
         private const val CHUNK_SAMPLES = SAMPLE_RATE * CHUNK_SECONDS
         private const val MIN_SAMPLES = 4_800 // 0.3 s
-        private const val MIN_AUDIBLE_RMS = 0.00020
+        private const val SILENCE_RMS = 0.0010
     }
 
     fun transcribe(
@@ -46,6 +49,8 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
         val results = ArrayList<TranscriptChunk>()
         var maxRms = 0.0
         var maxPeak = 0f
+        var audibleChunks = 0
+        var rejectedHallucinations = 0
 
         try {
             val totalChunks = ((audio.sampleCount + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES)
@@ -69,26 +74,34 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
                     maxRms = maxOf(maxRms, stats.first)
                     maxPeak = maxOf(maxPeak, stats.second)
 
-                    val stream = recognizer.createStream()
-                    val text = try {
-                        stream.acceptWaveform(samples, SAMPLE_RATE)
-                        recognizer.decode(stream)
-                        recognizer.getResult(stream).text.trim()
-                    } finally {
-                        stream.release()
-                    }
+                    // Do not ask Whisper to invent words from near-silence.
+                    if (stats.first >= SILENCE_RMS) {
+                        audibleChunks++
+                        val stream = recognizer.createStream()
+                        val text = try {
+                            stream.acceptWaveform(samples, SAMPLE_RATE)
+                            recognizer.decode(stream)
+                            recognizer.getResult(stream).text.trim()
+                        } finally {
+                            stream.release()
+                        }
 
-                    if (text.isNotBlank()) {
-                        val line = TranscriptChunk(
-                            startSeconds = firstSample.toDouble() / SAMPLE_RATE,
-                            endSeconds = minOf(
-                                audio.durationSeconds,
-                                (firstSample + count).toDouble() / SAMPLE_RATE,
-                            ),
-                            text = text,
-                        )
-                        results.add(line)
-                        onChunk(line)
+                        if (text.isNotBlank()) {
+                            if (looksLikeRunawayRepetition(text)) {
+                                rejectedHallucinations++
+                            } else {
+                                val line = TranscriptChunk(
+                                    startSeconds = firstSample.toDouble() / SAMPLE_RATE,
+                                    endSeconds = minOf(
+                                        audio.durationSeconds,
+                                        (firstSample + count).toDouble() / SAMPLE_RATE,
+                                    ),
+                                    text = text,
+                                )
+                                results.add(line)
+                                onChunk(line)
+                            }
+                        }
                     }
 
                     chunkIndex++
@@ -97,15 +110,20 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
             }
 
             if (results.isEmpty()) {
-                if (maxRms < MIN_AUDIBLE_RMS) {
-                    error(
-                        "L'audio è stato letto, ma il segnale decodificato risulta quasi silenzioso " +
-                            "(RMS=${"%.6f".format(maxRms)}, picco=${"%.4f".format(maxPeak)}).",
+                val rms = String.format(Locale.US, "%.6f", maxRms)
+                val peak = String.format(Locale.US, "%.4f", maxPeak)
+                when {
+                    audibleChunks == 0 -> error(
+                        "Il file è stato letto, ma dopo la conversione il segnale risulta quasi silenzioso " +
+                            "(RMS=$rms, picco=$peak).",
                     )
-                } else {
-                    error(
-                        "Whisper ha ricevuto l'audio ma non ha prodotto testo " +
-                            "(RMS=${"%.6f".format(maxRms)}, picco=${"%.4f".format(maxPeak)}).",
+                    rejectedHallucinations > 0 -> error(
+                        "Whisper stava producendo testo ripetitivo non affidabile e l'app lo ha bloccato. " +
+                            "Audio ricevuto: RMS=$rms, picco=$peak.",
+                    )
+                    else -> error(
+                        "Whisper ha ricevuto audio reale ma non ha prodotto testo " +
+                            "(RMS=$rms, picco=$peak).",
                     )
                 }
             }
@@ -123,7 +141,7 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
             decoder = "sherpa-onnx-whisper-tiny/tiny-decoder.int8.onnx",
             language = "it",
             task = "transcribe",
-            tailPaddings = 0,
+            tailPaddings = 300,
             enableTokenTimestamps = false,
             enableSegmentTimestamps = false,
         )
@@ -167,10 +185,7 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
         }
     }
 
-    /**
-     * Removes a tiny DC offset and applies only conservative gain to quiet
-     * recordings. Returns RMS and peak after preparation for diagnostics.
-     */
+    /** Remove DC only. Do not amplify noise before ASR. */
     private fun prepareAudio(samples: FloatArray): Pair<Double, Float> {
         if (samples.isEmpty()) return 0.0 to 0f
 
@@ -186,23 +201,27 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
             peak = maxOf(peak, abs(centered))
             energy += centered.toDouble() * centered.toDouble()
         }
+        return sqrt(energy / samples.size.toDouble()) to peak
+    }
 
-        var rms = sqrt(energy / samples.size.toDouble())
-        if (rms >= MIN_AUDIBLE_RMS && peak in 0.001f..0.45f) {
-            val gain = minOf(0.85f / peak, 4.0f)
-            if (gain > 1.05f) {
-                peak = 0f
-                energy = 0.0
-                for (i in samples.indices) {
-                    val v = (samples[i] * gain).coerceIn(-1f, 1f)
-                    samples[i] = v
-                    peak = maxOf(peak, abs(v))
-                    energy += v.toDouble() * v.toDouble()
-                }
-                rms = sqrt(energy / samples.size.toDouble())
-            }
+    /**
+     * Blocks the classic Whisper failure where one sentence is repeated over
+     * and over. It does not alter normal text; it only rejects a chunk when the
+     * same substantial clause appears at least three times.
+     */
+    private fun looksLikeRunawayRepetition(text: String): Boolean {
+        val parts = text
+            .split(Regex("[.!?;\\n]|\\s+-\\s+"))
+            .map { it.trim().lowercase(Locale.ITALY).replace(Regex("\\s+"), " ") }
+            .filter { it.length >= 18 && it.split(' ').size >= 4 }
+        if (parts.size < 3) return false
+        val counts = HashMap<String, Int>()
+        for (part in parts) {
+            val n = (counts[part] ?: 0) + 1
+            counts[part] = n
+            if (n >= 3) return true
         }
-        return rms to peak
+        return false
     }
 
     private fun readPcm16(raf: RandomAccessFile, firstSample: Long, count: Int): FloatArray {
