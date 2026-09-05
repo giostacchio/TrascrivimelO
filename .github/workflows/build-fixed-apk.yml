@@ -39,17 +39,28 @@ jobs:
           sudo unzip -q /tmp/gradle.zip -d /opt
           echo '/opt/gradle-8.7/bin' >> "$GITHUB_PATH"
 
-      - name: Reuse offline models from v1.2 APK
+      - name: Download current official Whisper tiny model
         run: |
-          rm -rf /tmp/old-apk app/src/main/assets
-          mkdir -p /tmp/old-apk app/src/main/assets
+          rm -rf /tmp/whisper app/src/main/assets
+          mkdir -p /tmp/whisper app/src/main/assets/sherpa-onnx-whisper-tiny
           curl -L --fail --retry 3 \
-            -o /tmp/old.apk \
-            https://github.com/giostacchio/TrascrivimelO/releases/download/V1.0/Trascrivi_Offline_v1.2.apk
-          unzip -q /tmp/old.apk 'assets/*' -d /tmp/old-apk
-          cp -R /tmp/old-apk/assets/. app/src/main/assets/
-          echo 'Offline assets copied:'
-          find app/src/main/assets -maxdepth 2 -type f -printf '%p %k KB\n' | sort
+            -o /tmp/whisper.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2
+          tar -xjf /tmp/whisper.tar.bz2 -C /tmp/whisper
+          MODEL_DIR="$(find /tmp/whisper -type d -name 'sherpa-onnx-whisper-tiny' | head -n 1)"
+          test -n "$MODEL_DIR"
+          cp "$MODEL_DIR/tiny-encoder.int8.onnx" app/src/main/assets/sherpa-onnx-whisper-tiny/
+          cp "$MODEL_DIR/tiny-decoder.int8.onnx" app/src/main/assets/sherpa-onnx-whisper-tiny/
+          cp "$MODEL_DIR/tiny-tokens.txt" app/src/main/assets/sherpa-onnx-whisper-tiny/
+
+          ENCODER_SIZE=$(stat -c%s app/src/main/assets/sherpa-onnx-whisper-tiny/tiny-encoder.int8.onnx)
+          DECODER_SIZE=$(stat -c%s app/src/main/assets/sherpa-onnx-whisper-tiny/tiny-decoder.int8.onnx)
+          TOKENS_SIZE=$(stat -c%s app/src/main/assets/sherpa-onnx-whisper-tiny/tiny-tokens.txt)
+          echo "encoder=$ENCODER_SIZE decoder=$DECODER_SIZE tokens=$TOKENS_SIZE"
+          test "$ENCODER_SIZE" -gt 10000000
+          test "$DECODER_SIZE" -gt 80000000
+          test "$TOKENS_SIZE" -gt 700000
+          ls -lh app/src/main/assets/sherpa-onnx-whisper-tiny/
 
       - name: Build APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
@@ -57,16 +68,16 @@ jobs:
       - name: Prepare APK
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/Trascrivi_Offline_v1.3_FIX.apk
-          sha256sum dist/Trascrivi_Offline_v1.3_FIX.apk | tee dist/SHA256.txt
-          ls -lh dist/Trascrivi_Offline_v1.3_FIX.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/Trascrivi_Offline_v1.4_FIX.apk
+          sha256sum dist/Trascrivi_Offline_v1.4_FIX.apk | tee dist/SHA256.txt
+          ls -lh dist/Trascrivi_Offline_v1.4_FIX.apk
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Trascrivi-Offline-v1.3-FIX
+          name: Trascrivi-Offline-v1.4-FIX
           path: |
-            dist/Trascrivi_Offline_v1.3_FIX.apk
+            dist/Trascrivi_Offline_v1.4_FIX.apk
             dist/SHA256.txt
           retention-days: 30
 
@@ -74,14 +85,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES='FIX principale: la trascrizione non dipende più dalla separazione delle voci. Whisper italiano riceve sempre tutto l audio in blocchi a memoria limitata. Il TXT viene salvato automaticamente in Download/Trascrivimelo e resta disponibile anche da Copia testo / Salva TXT.\n\nNota installazione: questa build è firmata separatamente dalla v1.2; se Android segnala conflitto, disinstalla prima la v1.2 e poi installa questa.'
-          if gh release view V1.3 >/dev/null 2>&1; then
-            gh release upload V1.3 dist/Trascrivi_Offline_v1.3_FIX.apk dist/SHA256.txt --clobber
+          NOTES='v1.4: sostituito il vecchio modello Whisper recuperato dalla APK precedente con il modello Whisper tiny multilingue ufficiale attuale di sherpa-onnx. Trascrizione diretta a 16 kHz, diagnostica del livello audio e nessuna dipendenza dalla separazione delle voci. Se non viene riconosciuto testo, l app ora segnala un errore reale invece di presentare la sola intestazione come trascrizione.'
+          if gh release view V1.4 >/dev/null 2>&1; then
+            gh release upload V1.4 dist/Trascrivi_Offline_v1.4_FIX.apk dist/SHA256.txt --clobber
           else
-            gh release create V1.3 \
-              dist/Trascrivi_Offline_v1.3_FIX.apk \
+            gh release create V1.4 \
+              dist/Trascrivi_Offline_v1.4_FIX.apk \
               dist/SHA256.txt \
               --target main \
-              --title 'Trascrivimelo v1.3 FIX' \
+              --title 'Trascrivimelo v1.4 FIX modello' \
               --notes "$NOTES"
           fi
