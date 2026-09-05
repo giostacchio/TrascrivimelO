@@ -1,0 +1,25 @@
+=== APK SIZE ===
+-rw-r--r-- 1 runner runner 141M Sep  5 09:46 /tmp/Trascrivi_Offline_v1.2.apk
+
+=== TOP-LEVEL PATH COUNTS ===
+     17 res
+      9 assets
+      7 kotlin
+      5 META-INF
+      2 lib
+      1 resources.arsc
+      1 kotlin-tooling-metadata.json
+      1 classes.dex
+      1 AndroidManifest.xml
+
+=== LIKELY STT / MODEL / PYTHON / FLUTTER FILES ===
+lib/arm64-v8a/libonnxruntime.so
+lib/arm64-v8a/libsherpa-onnx-jni.so
+assets/LICENSE-Whisper-MIT.txt
+assets/LICENSE-pyannote-model.txt
+assets/LICENSE-sherpa-onnx.txt
+assets/embedding.onnx
+assets/segmentation.onnx
+assets/sherpa-onnx-whisper-tiny/tiny-decoder.int8.onnx
+assets/sherpa-onnx-whisper-tiny/tiny-encoder.int8.onnx
+assets/sherpa-onnx-whisper-tiny/tiny-tokens.txt

@@ -1,0 +1,49 @@
+Archive:  /tmp/Trascrivi_Offline_v1.2.apk
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+       56  1981-01-01 01:01   META-INF/com/android/build/gradle/app-metadata.properties
+       46  1981-01-01 01:01   META-INF/version-control-info.textproto
+  2247668  1981-01-01 01:01   classes.dex
+ 21684880  1981-01-01 01:01   lib/arm64-v8a/libonnxruntime.so
+  4761536  1981-01-01 01:01   lib/arm64-v8a/libsherpa-onnx-jni.so
+     1063  1981-01-01 01:01   assets/LICENSE-Whisper-MIT.txt
+     1061  1981-01-01 01:01   assets/LICENSE-pyannote-model.txt
+    11358  1981-01-01 01:01   assets/LICENSE-sherpa-onnx.txt
+      601  1981-01-01 01:01   assets/THIRD_PARTY_NOTICES.txt
+ 39593761  1981-01-01 01:01   assets/embedding.onnx
+  5992913  1981-01-01 01:01   assets/segmentation.onnx
+ 60839424  1981-01-01 01:01   assets/sherpa-onnx-whisper-tiny/tiny-decoder.int8.onnx
+ 12937772  1981-01-01 01:01   assets/sherpa-onnx-whisper-tiny/tiny-encoder.int8.onnx
+   816730  1981-01-01 01:01   assets/sherpa-onnx-whisper-tiny/tiny-tokens.txt
+      625  1981-01-01 01:01   kotlin-tooling-metadata.json
+      928  1981-01-01 01:01   kotlin/annotation/annotation.kotlin_builtins
+     3685  1981-01-01 01:01   kotlin/collections/collections.kotlin_builtins
+      200  1981-01-01 01:01   kotlin/coroutines/coroutines.kotlin_builtins
+      646  1981-01-01 01:01   kotlin/internal/internal.kotlin_builtins
+    18640  1981-01-01 01:01   kotlin/kotlin.kotlin_builtins
+     3399  1981-01-01 01:01   kotlin/ranges/ranges.kotlin_builtins
+     2396  1981-01-01 01:01   kotlin/reflect/reflect.kotlin_builtins
+     2552  1981-01-01 01:01   AndroidManifest.xml
+     7778  1981-01-01 01:01   res/-6.webp
+      548  1981-01-01 01:01   res/0K.xml
+     5696  1981-01-01 01:01   res/0w.xml
+      212  1981-01-01 01:01   res/4j.xml
+     1572  1981-01-01 01:01   res/BJ.xml
+      548  1981-01-01 01:01   res/BW.xml
+     1404  1981-01-01 01:01   res/MO.webp
+      132  1981-01-01 01:01   res/Qq.xml
+     2884  1981-01-01 01:01   res/Sn.webp
+      982  1981-01-01 01:01   res/d2.webp
+     2898  1981-01-01 01:01   res/fq.webp
+     5914  1981-01-01 01:01   res/j_.webp
+     1900  1981-01-01 01:01   res/qs.webp
+     3844  1981-01-01 01:01   res/sK.webp
+     3918  1981-01-01 01:01   res/u5.webp
+      788  1981-01-01 01:01   res/xC.xml
+     1772  1981-01-01 01:01   res/yw.webp
+     2868  1981-01-01 01:01   resources.arsc
+     4118  1981-01-01 01:01   META-INF/TRASCRIV.SF
+     1658  1981-01-01 01:01   META-INF/TRASCRIV.RSA
+     3991  1981-01-01 01:01   META-INF/MANIFEST.MF
+---------                     -------
+148977365                     44 files
