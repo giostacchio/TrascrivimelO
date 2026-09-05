@@ -116,7 +116,7 @@ class MainActivity : Activity() {
         cancelButton = button("Interrompi") {
             cancelled.set(true)
             statusView.text = "Interruzione in corso…"
-            isEnabled = false
+            cancelButton.isEnabled = false
         }.apply {
             visibility = View.GONE
         }
