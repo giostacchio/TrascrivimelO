@@ -6,6 +6,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import android.os.Build
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -57,11 +58,18 @@ internal class AudioDecoder(private val context: Context) {
                 inputFormat.getLong(MediaFormat.KEY_DURATION)
             } else -1L
 
+            // Important on recent Android/Pixel devices: ask MediaCodec for PCM16.
+            // If the codec chooses another PCM format anyway, we read the actual
+            // output format below and convert it correctly instead of assuming 16-bit.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                inputFormat.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+            }
+
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(inputFormat, null, null, 0)
             codec.start()
 
-            var channels = inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            var channels = inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
             var sampleRate = inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
             var resampler = StreamingLinearResampler(sampleRate, TARGET_SAMPLE_RATE) { sink.write(it) }
@@ -107,11 +115,18 @@ internal class AudioDecoder(private val context: Context) {
                     MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
                     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         val out = codec.outputFormat
-                        val newChannels = out.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        val newChannels = out.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
                         val newRate = out.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        val newEncoding = if (out.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                        val newEncoding = if (
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+                            out.containsKey(MediaFormat.KEY_PCM_ENCODING)
+                        ) {
                             out.getInteger(MediaFormat.KEY_PCM_ENCODING)
-                        } else AudioFormat.ENCODING_PCM_16BIT
+                        } else {
+                            AudioFormat.ENCODING_PCM_16BIT
+                        }
+
+                        ensureSupportedPcmEncoding(newEncoding)
 
                         if (sink.sampleCount == 0L && newRate != sampleRate) {
                             sampleRate = newRate
@@ -126,7 +141,7 @@ internal class AudioDecoder(private val context: Context) {
                                 ?: error("Impossibile decodificare il buffer audio.")
                             output.position(info.offset)
                             output.limit(info.offset + info.size)
-                            output.order(ByteOrder.LITTLE_ENDIAN)
+                            output.order(ByteOrder.nativeOrder())
                             val mono = pcmToMono(output, channels, pcmEncoding)
                             if (mono.isNotEmpty()) resampler.accept(mono)
                         }
@@ -167,12 +182,27 @@ internal class AudioDecoder(private val context: Context) {
         }
     }
 
+    private fun ensureSupportedPcmEncoding(encoding: Int) {
+        val supported = encoding == AudioFormat.ENCODING_PCM_8BIT ||
+            encoding == AudioFormat.ENCODING_PCM_16BIT ||
+            encoding == AudioFormat.ENCODING_PCM_FLOAT ||
+            encoding == AudioFormat.ENCODING_PCM_24BIT_PACKED ||
+            encoding == AudioFormat.ENCODING_PCM_32BIT
+        require(supported) {
+            "Formato PCM prodotto da Android non supportato (encoding=$encoding)."
+        }
+    }
+
     private fun pcmToMono(buffer: ByteBuffer, channels: Int, encoding: Int): FloatArray {
+        ensureSupportedPcmEncoding(encoding)
         val ch = channels.coerceAtLeast(1)
         val bytesPerSample = when (encoding) {
-            AudioFormat.ENCODING_PCM_FLOAT -> 4
             AudioFormat.ENCODING_PCM_8BIT -> 1
-            else -> 2
+            AudioFormat.ENCODING_PCM_16BIT -> 2
+            AudioFormat.ENCODING_PCM_24BIT_PACKED -> 3
+            AudioFormat.ENCODING_PCM_FLOAT,
+            AudioFormat.ENCODING_PCM_32BIT -> 4
+            else -> error("Formato PCM non supportato: $encoding")
         }
         val frames = buffer.remaining() / (bytesPerSample * ch)
         if (frames <= 0) return FloatArray(0)
@@ -181,15 +211,39 @@ internal class AudioDecoder(private val context: Context) {
         for (frame in 0 until frames) {
             var sum = 0f
             repeat(ch) {
-                sum += when (encoding) {
-                    AudioFormat.ENCODING_PCM_FLOAT -> buffer.float.coerceIn(-1f, 1f)
-                    AudioFormat.ENCODING_PCM_8BIT -> ((buffer.get().toInt() and 0xff) - 128) / 128f
-                    else -> buffer.short / 32768f
-                }
+                sum += readOnePcmSample(buffer, encoding)
             }
             out[frame] = (sum / ch).coerceIn(-1f, 1f)
         }
         return out
+    }
+
+    private fun readOnePcmSample(buffer: ByteBuffer, encoding: Int): Float = when (encoding) {
+        AudioFormat.ENCODING_PCM_8BIT ->
+            ((buffer.get().toInt() and 0xff) - 128) / 128f
+
+        AudioFormat.ENCODING_PCM_16BIT ->
+            buffer.short / 32768f
+
+        AudioFormat.ENCODING_PCM_FLOAT -> {
+            val v = buffer.float
+            if (v.isFinite()) v.coerceIn(-1f, 1f) else 0f
+        }
+
+        AudioFormat.ENCODING_PCM_24BIT_PACKED -> {
+            // Android specifies packed 24-bit PCM bytes in little-endian order.
+            val b0 = buffer.get().toInt() and 0xff
+            val b1 = buffer.get().toInt() and 0xff
+            val b2 = buffer.get().toInt() and 0xff
+            var raw = b0 or (b1 shl 8) or (b2 shl 16)
+            if ((raw and 0x00800000) != 0) raw = raw or -0x01000000
+            (raw / 8388608f).coerceIn(-1f, 1f)
+        }
+
+        AudioFormat.ENCODING_PCM_32BIT ->
+            (buffer.int.toDouble() / 2147483648.0).toFloat().coerceIn(-1f, 1f)
+
+        else -> error("Formato PCM non supportato: $encoding")
     }
 }
 
