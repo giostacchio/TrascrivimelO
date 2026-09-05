@@ -1,0 +1,111 @@
+name: Analyze uploaded APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/analyze-apk.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download APK from release
+        run: |
+          curl -L --fail --retry 3 \
+            -o /tmp/Trascrivi_Offline_v1.2.apk \
+            https://github.com/giostacchio/TrascrivimelO/releases/download/V1.0/Trascrivi_Offline_v1.2.apk
+          ls -lh /tmp/Trascrivi_Offline_v1.2.apk
+
+      - name: Inventory APK
+        run: |
+          rm -rf analysis /tmp/jadx-out
+          mkdir -p analysis
+          unzip -l /tmp/Trascrivi_Offline_v1.2.apk > analysis/apk-file-list.txt
+          unzip -Z1 /tmp/Trascrivi_Offline_v1.2.apk | sed -n '1,400p' > analysis/apk-first-400-paths.txt
+          {
+            echo '=== APK SIZE ==='
+            ls -lh /tmp/Trascrivi_Offline_v1.2.apk
+            echo
+            echo '=== TOP-LEVEL PATH COUNTS ==='
+            unzip -Z1 /tmp/Trascrivi_Offline_v1.2.apk | cut -d/ -f1 | sort | uniq -c | sort -nr | head -80
+            echo
+            echo '=== LIKELY STT / MODEL / PYTHON / FLUTTER FILES ==='
+            unzip -Z1 /tmp/Trascrivi_Offline_v1.2.apk | grep -Ei 'whisper|vosk|model|speech|transcrib|audio|python|kivy|flutter|onnx|gguf|tflite|token|vocab|mel|lib.*\.so' | head -400 || true
+          } > analysis/summary.txt
+
+      - name: Install JADX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jadx
+
+      - name: Decompile APK
+        run: |
+          mkdir -p /tmp/jadx-out
+          jadx -d /tmp/jadx-out /tmp/Trascrivi_Offline_v1.2.apk || true
+          find /tmp/jadx-out -type f | wc -l | tee analysis/jadx-file-count.txt
+          find /tmp/jadx-out -type f -printf '%s %p\n' | sort -nr | head -100 > analysis/jadx-largest-files.txt
+          if [ -f /tmp/jadx-out/resources/AndroidManifest.xml ]; then
+            cp /tmp/jadx-out/resources/AndroidManifest.xml analysis/AndroidManifest.xml
+          fi
+
+      - name: Collect relevant source excerpts
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, shutil
+          root = Path('/tmp/jadx-out/sources')
+          out = Path('analysis/relevant-sources')
+          out.mkdir(parents=True, exist_ok=True)
+          pat = re.compile(r'transcrib|speech|recogn|whisper|vosk|audio|mediaextractor|mediacodec|metadata|document|storage|file', re.I)
+          candidates=[]
+          if root.exists():
+              for p in root.rglob('*'):
+                  if not p.is_file() or p.stat().st_size > 350_000:
+                      continue
+                  try:
+                      txt=p.read_text(errors='ignore')
+                  except Exception:
+                      continue
+                  score = len(pat.findall(str(p))) * 20 + len(pat.findall(txt))
+                  if score:
+                      candidates.append((score,p,txt))
+          candidates.sort(key=lambda x:x[0], reverse=True)
+          total=0
+          index=[]
+          for score,p,txt in candidates[:80]:
+              data=txt.encode('utf-8',errors='ignore')
+              if total+len(data)>3_000_000:
+                  break
+              rel=p.relative_to(root)
+              dest=out/rel
+              dest.parent.mkdir(parents=True,exist_ok=True)
+              dest.write_bytes(data)
+              total+=len(data)
+              index.append(f'{score:5d}  {len(data):8d}  {rel}')
+          Path('analysis/relevant-source-index.txt').write_text('\n'.join(index)+'\n')
+          PY
+
+      - name: Search for transcription flow
+        run: |
+          {
+            echo '=== KEYWORD HITS ==='
+            grep -RniE --include='*.java' --include='*.kt' --include='*.xml' \
+              'transcrib|speech|recogn|whisper|vosk|audio|MediaExtractor|MediaCodec|metadata|file name|duration' \
+              /tmp/jadx-out/sources /tmp/jadx-out/resources 2>/dev/null | head -1200 || true
+          } > analysis/keyword-hits.txt
+
+      - name: Commit analysis
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add analysis
+          git commit -m 'Analyze Trascrivi Offline APK' || exit 0
+          git push
