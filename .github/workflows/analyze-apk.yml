@@ -26,63 +26,74 @@ jobs:
 
       - name: Inventory APK
         run: |
-          rm -rf analysis /tmp/jadx-out
+          rm -rf analysis /tmp/jadx-out /tmp/jadx
           mkdir -p analysis
           unzip -l /tmp/Trascrivi_Offline_v1.2.apk > analysis/apk-file-list.txt
-          unzip -Z1 /tmp/Trascrivi_Offline_v1.2.apk | sed -n '1,400p' > analysis/apk-first-400-paths.txt
+          unzip -Z1 /tmp/Trascrivi_Offline_v1.2.apk | sed -n '1,500p' > analysis/apk-first-500-paths.txt
           {
             echo '=== APK SIZE ==='
             ls -lh /tmp/Trascrivi_Offline_v1.2.apk
             echo
             echo '=== TOP-LEVEL PATH COUNTS ==='
-            unzip -Z1 /tmp/Trascrivi_Offline_v1.2.apk | cut -d/ -f1 | sort | uniq -c | sort -nr | head -80
+            unzip -Z1 /tmp/Trascrivi_Offline_v1.2.apk | cut -d/ -f1 | sort | uniq -c | sort -nr | head -100
             echo
             echo '=== LIKELY STT / MODEL / PYTHON / FLUTTER FILES ==='
-            unzip -Z1 /tmp/Trascrivi_Offline_v1.2.apk | grep -Ei 'whisper|vosk|model|speech|transcrib|audio|python|kivy|flutter|onnx|gguf|tflite|token|vocab|mel|lib.*\.so' | head -400 || true
+            unzip -Z1 /tmp/Trascrivi_Offline_v1.2.apk | grep -Ei 'whisper|vosk|model|speech|transcrib|audio|python|kivy|flutter|onnx|gguf|tflite|token|vocab|mel|lib.*\.so' | head -600 || true
           } > analysis/summary.txt
 
-      - name: Install JADX
+      - name: Download JADX
+        continue-on-error: true
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jadx
+          mkdir -p /tmp/jadx
+          JADX_URL=$(curl -fsSL https://api.github.com/repos/skylot/jadx/releases/latest | jq -r '.assets[] | select(.name|test("^jadx-[0-9].*\\.zip$")) | .browser_download_url' | head -1)
+          echo "JADX_URL=$JADX_URL"
+          test -n "$JADX_URL"
+          curl -L --fail --retry 3 -o /tmp/jadx.zip "$JADX_URL"
+          unzip -q /tmp/jadx.zip -d /tmp/jadx
+          chmod +x /tmp/jadx/bin/jadx
+          /tmp/jadx/bin/jadx --version
 
       - name: Decompile APK
+        continue-on-error: true
         run: |
           mkdir -p /tmp/jadx-out
-          jadx -d /tmp/jadx-out /tmp/Trascrivi_Offline_v1.2.apk || true
-          find /tmp/jadx-out -type f | wc -l | tee analysis/jadx-file-count.txt
-          find /tmp/jadx-out -type f -printf '%s %p\n' | sort -nr | head -100 > analysis/jadx-largest-files.txt
-          if [ -f /tmp/jadx-out/resources/AndroidManifest.xml ]; then
-            cp /tmp/jadx-out/resources/AndroidManifest.xml analysis/AndroidManifest.xml
+          if [ -x /tmp/jadx/bin/jadx ]; then
+            /tmp/jadx/bin/jadx -d /tmp/jadx-out /tmp/Trascrivi_Offline_v1.2.apk || true
+            find /tmp/jadx-out -type f | wc -l | tee analysis/jadx-file-count.txt
+            find /tmp/jadx-out -type f -printf '%s %p\n' | sort -nr | head -120 > analysis/jadx-largest-files.txt
+            if [ -f /tmp/jadx-out/resources/AndroidManifest.xml ]; then
+              cp /tmp/jadx-out/resources/AndroidManifest.xml analysis/AndroidManifest.xml
+            fi
           fi
 
       - name: Collect relevant source excerpts
+        continue-on-error: true
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re, shutil
+          import re
           root = Path('/tmp/jadx-out/sources')
           out = Path('analysis/relevant-sources')
           out.mkdir(parents=True, exist_ok=True)
-          pat = re.compile(r'transcrib|speech|recogn|whisper|vosk|audio|mediaextractor|mediacodec|metadata|document|storage|file', re.I)
+          pat = re.compile(r'transcrib|speech|recogn|whisper|vosk|audio|mediaextractor|mediacodec|metadata|document|storage|file|mainactivity', re.I)
           candidates=[]
           if root.exists():
               for p in root.rglob('*'):
-                  if not p.is_file() or p.stat().st_size > 350_000:
+                  if not p.is_file() or p.stat().st_size > 400_000:
                       continue
                   try:
                       txt=p.read_text(errors='ignore')
                   except Exception:
                       continue
-                  score = len(pat.findall(str(p))) * 20 + len(pat.findall(txt))
+                  score = len(pat.findall(str(p))) * 30 + len(pat.findall(txt))
                   if score:
                       candidates.append((score,p,txt))
           candidates.sort(key=lambda x:x[0], reverse=True)
           total=0
           index=[]
-          for score,p,txt in candidates[:80]:
+          for score,p,txt in candidates[:100]:
               data=txt.encode('utf-8',errors='ignore')
-              if total+len(data)>3_000_000:
+              if total+len(data)>4_000_000:
                   break
               rel=p.relative_to(root)
               dest=out/rel
@@ -94,15 +105,17 @@ jobs:
           PY
 
       - name: Search for transcription flow
+        continue-on-error: true
         run: |
           {
             echo '=== KEYWORD HITS ==='
             grep -RniE --include='*.java' --include='*.kt' --include='*.xml' \
-              'transcrib|speech|recogn|whisper|vosk|audio|MediaExtractor|MediaCodec|metadata|file name|duration' \
-              /tmp/jadx-out/sources /tmp/jadx-out/resources 2>/dev/null | head -1200 || true
+              'transcrib|speech|recogn|whisper|vosk|audio|MediaExtractor|MediaCodec|metadata|duration|openDocument|createDocument' \
+              /tmp/jadx-out/sources /tmp/jadx-out/resources 2>/dev/null | head -1600 || true
           } > analysis/keyword-hits.txt
 
       - name: Commit analysis
+        if: always()
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
