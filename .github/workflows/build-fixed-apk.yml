@@ -1,0 +1,87 @@
+name: Build fixed Trascrivimelo APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - '.github/workflows/build-fixed-apk.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform 34
+        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+
+      - name: Install Gradle 8.7
+        run: |
+          curl -L --fail --retry 3 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          sudo unzip -q /tmp/gradle.zip -d /opt
+          echo '/opt/gradle-8.7/bin' >> "$GITHUB_PATH"
+
+      - name: Reuse offline models from v1.2 APK
+        run: |
+          rm -rf /tmp/old-apk app/src/main/assets
+          mkdir -p /tmp/old-apk app/src/main/assets
+          curl -L --fail --retry 3 \
+            -o /tmp/old.apk \
+            https://github.com/giostacchio/TrascrivimelO/releases/download/V1.0/Trascrivi_Offline_v1.2.apk
+          unzip -q /tmp/old.apk 'assets/*' -d /tmp/old-apk
+          cp -R /tmp/old-apk/assets/. app/src/main/assets/
+          echo 'Offline assets copied:'
+          find app/src/main/assets -maxdepth 2 -type f -printf '%p %k KB\n' | sort
+
+      - name: Build APK
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Prepare APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/Trascrivi_Offline_v1.3_FIX.apk
+          sha256sum dist/Trascrivi_Offline_v1.3_FIX.apk | tee dist/SHA256.txt
+          ls -lh dist/Trascrivi_Offline_v1.3_FIX.apk
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trascrivi-Offline-v1.3-FIX
+          path: |
+            dist/Trascrivi_Offline_v1.3_FIX.apk
+            dist/SHA256.txt
+          retention-days: 30
+
+      - name: Publish fixed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES='FIX principale: la trascrizione non dipende più dalla separazione delle voci. Whisper italiano riceve sempre tutto l audio in blocchi a memoria limitata. Il TXT viene salvato automaticamente in Download/Trascrivimelo e resta disponibile anche da Copia testo / Salva TXT.\n\nNota installazione: questa build è firmata separatamente dalla v1.2; se Android segnala conflitto, disinstalla prima la v1.2 e poi installa questa.'
+          if gh release view V1.3 >/dev/null 2>&1; then
+            gh release upload V1.3 dist/Trascrivi_Offline_v1.3_FIX.apk dist/SHA256.txt --clobber
+          else
+            gh release create V1.3 \
+              dist/Trascrivi_Offline_v1.3_FIX.apk \
+              dist/SHA256.txt \
+              --target main \
+              --title 'Trascrivimelo v1.3 FIX' \
+              --notes "$NOTES"
+          fi
