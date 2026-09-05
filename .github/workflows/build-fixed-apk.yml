@@ -39,28 +39,23 @@ jobs:
           sudo unzip -q /tmp/gradle.zip -d /opt
           echo '/opt/gradle-8.7/bin' >> "$GITHUB_PATH"
 
-      - name: Download current official Whisper tiny model
+      - name: Download official Whisper base model
         run: |
           rm -rf /tmp/whisper app/src/main/assets
-          mkdir -p /tmp/whisper app/src/main/assets/sherpa-onnx-whisper-tiny
+          mkdir -p /tmp/whisper app/src/main/assets/sherpa-onnx-whisper-base
           curl -L --fail --retry 3 \
             -o /tmp/whisper.tar.bz2 \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2
           tar -xjf /tmp/whisper.tar.bz2 -C /tmp/whisper
-          MODEL_DIR="$(find /tmp/whisper -type d -name 'sherpa-onnx-whisper-tiny' | head -n 1)"
+          MODEL_DIR="$(find /tmp/whisper -type d -name 'sherpa-onnx-whisper-base' | head -n 1)"
           test -n "$MODEL_DIR"
-          cp "$MODEL_DIR/tiny-encoder.int8.onnx" app/src/main/assets/sherpa-onnx-whisper-tiny/
-          cp "$MODEL_DIR/tiny-decoder.int8.onnx" app/src/main/assets/sherpa-onnx-whisper-tiny/
-          cp "$MODEL_DIR/tiny-tokens.txt" app/src/main/assets/sherpa-onnx-whisper-tiny/
-
-          ENCODER_SIZE=$(stat -c%s app/src/main/assets/sherpa-onnx-whisper-tiny/tiny-encoder.int8.onnx)
-          DECODER_SIZE=$(stat -c%s app/src/main/assets/sherpa-onnx-whisper-tiny/tiny-decoder.int8.onnx)
-          TOKENS_SIZE=$(stat -c%s app/src/main/assets/sherpa-onnx-whisper-tiny/tiny-tokens.txt)
-          echo "encoder=$ENCODER_SIZE decoder=$DECODER_SIZE tokens=$TOKENS_SIZE"
-          test "$ENCODER_SIZE" -gt 10000000
-          test "$DECODER_SIZE" -gt 80000000
-          test "$TOKENS_SIZE" -gt 700000
-          ls -lh app/src/main/assets/sherpa-onnx-whisper-tiny/
+          cp "$MODEL_DIR/base-encoder.int8.onnx" app/src/main/assets/sherpa-onnx-whisper-base/
+          cp "$MODEL_DIR/base-decoder.int8.onnx" app/src/main/assets/sherpa-onnx-whisper-base/
+          cp "$MODEL_DIR/base-tokens.txt" app/src/main/assets/sherpa-onnx-whisper-base/
+          test -s app/src/main/assets/sherpa-onnx-whisper-base/base-encoder.int8.onnx
+          test -s app/src/main/assets/sherpa-onnx-whisper-base/base-decoder.int8.onnx
+          test -s app/src/main/assets/sherpa-onnx-whisper-base/base-tokens.txt
+          ls -lh app/src/main/assets/sherpa-onnx-whisper-base/
 
       - name: Build APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
@@ -68,16 +63,16 @@ jobs:
       - name: Prepare APK
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/Trascrivi_Offline_v1.5_PCM_FIX.apk
-          sha256sum dist/Trascrivi_Offline_v1.5_PCM_FIX.apk | tee dist/SHA256.txt
-          ls -lh dist/Trascrivi_Offline_v1.5_PCM_FIX.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/Trascrivi_Offline_v1.6_BASE_FIX.apk
+          sha256sum dist/Trascrivi_Offline_v1.6_BASE_FIX.apk | tee dist/SHA256.txt
+          ls -lh dist/Trascrivi_Offline_v1.6_BASE_FIX.apk
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Trascrivi-Offline-v1.5-PCM-FIX
+          name: Trascrivi-Offline-v1.6-BASE-FIX
           path: |
-            dist/Trascrivi_Offline_v1.5_PCM_FIX.apk
+            dist/Trascrivi_Offline_v1.6_BASE_FIX.apk
             dist/SHA256.txt
           retention-days: 30
 
@@ -85,14 +80,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES='v1.5: correzione della conversione audio Android. L app richiede esplicitamente PCM 16-bit al decoder e gestisce correttamente anche PCM float, 24-bit e 32-bit se il telefono restituisce un formato diverso. Rimossa l amplificazione automatica del rumore e bloccate le ripetizioni patologiche tipiche delle allucinazioni Whisper. Il modello resta offline e multilingue, forzato in italiano.'
-          if gh release view V1.5 >/dev/null 2>&1; then
-            gh release upload V1.5 dist/Trascrivi_Offline_v1.5_PCM_FIX.apk dist/SHA256.txt --clobber
+          NOTES='v1.6: verificato il file reale Registrazione2026-09-03 09-55-36.m4a. Il file è un AAC mono 44.1 kHz valido e contiene segnale audio reale; dopo la correzione PCM il limite principale resta Whisper Tiny, che allucina su questa registrazione. Questa build passa a Whisper Base multilingue ufficiale, forza italiano, usa blocchi da 20 secondi, non amplifica il rumore e blocca anche ripetizioni patologiche interne alla stessa frase.'
+          if gh release view V1.6 >/dev/null 2>&1; then
+            gh release upload V1.6 dist/Trascrivi_Offline_v1.6_BASE_FIX.apk dist/SHA256.txt --clobber
           else
-            gh release create V1.5 \
-              dist/Trascrivi_Offline_v1.5_PCM_FIX.apk \
+            gh release create V1.6 \
+              dist/Trascrivi_Offline_v1.6_BASE_FIX.apk \
               dist/SHA256.txt \
               --target main \
-              --title 'Trascrivimelo v1.5 PCM FIX' \
+              --title 'Trascrivimelo v1.6 Whisper Base' \
               --notes "$NOTES"
           fi
