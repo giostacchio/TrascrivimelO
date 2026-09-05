@@ -20,18 +20,22 @@ internal data class TranscriptChunk(
 )
 
 /**
- * v1.5: direct offline transcription with guarded input.
- * Audio is already decoded to real mono PCM16/16 kHz by AudioDecoder.
- * We do not amplify weak/noisy chunks before Whisper: doing that can turn
- * background noise into invented speech. Very quiet chunks are skipped and
- * obvious repeated-output hallucinations are rejected.
+ * v1.6: use Whisper BASE instead of TINY.
+ *
+ * The real sample provided by the user is a valid AAC mono 44.1 kHz recording
+ * with audible speech. Tiny was still producing hallucinations on it even after
+ * fixing PCM conversion, so ASR quality is now the primary bottleneck.
+ *
+ * We keep the input path conservative: mono PCM16/16 kHz, no artificial gain,
+ * near-silence skipped, 20-second chunks, Italian forced, and runaway repeated
+ * text rejected before it reaches the TXT.
  */
 internal class WhisperTranscriber(private val assets: AssetManager) {
     companion object {
         private const val SAMPLE_RATE = 16_000
-        private const val CHUNK_SECONDS = 30
+        private const val CHUNK_SECONDS = 20
         private const val CHUNK_SAMPLES = SAMPLE_RATE * CHUNK_SECONDS
-        private const val MIN_SAMPLES = 4_800 // 0.3 s
+        private const val MIN_SAMPLES = 4_800
         private const val SILENCE_RMS = 0.0010
     }
 
@@ -43,7 +47,7 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
     ): List<TranscriptChunk> {
         checkCancelled(cancelled)
         verifyModelAssets()
-        onProgress(22, "Caricamento di Whisper italiano…")
+        onProgress(22, "Caricamento di Whisper Base italiano…")
 
         val recognizer = createRecognizer()
         val results = ArrayList<TranscriptChunk>()
@@ -74,7 +78,6 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
                     maxRms = maxOf(maxRms, stats.first)
                     maxPeak = maxOf(maxPeak, stats.second)
 
-                    // Do not ask Whisper to invent words from near-silence.
                     if (stats.first >= SILENCE_RMS) {
                         audibleChunks++
                         val stream = recognizer.createStream()
@@ -114,15 +117,15 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
                 val peak = String.format(Locale.US, "%.4f", maxPeak)
                 when {
                     audibleChunks == 0 -> error(
-                        "Il file è stato letto, ma dopo la conversione il segnale risulta quasi silenzioso " +
+                        "Il file è stato letto, ma il segnale risulta quasi silenzioso " +
                             "(RMS=$rms, picco=$peak).",
                     )
                     rejectedHallucinations > 0 -> error(
-                        "Whisper stava producendo testo ripetitivo non affidabile e l'app lo ha bloccato. " +
+                        "Il riconoscitore ha prodotto solo testo ripetitivo non affidabile e l'app lo ha bloccato. " +
                             "Audio ricevuto: RMS=$rms, picco=$peak.",
                     )
                     else -> error(
-                        "Whisper ha ricevuto audio reale ma non ha prodotto testo " +
+                        "Whisper Base ha ricevuto audio reale ma non ha prodotto testo " +
                             "(RMS=$rms, picco=$peak).",
                     )
                 }
@@ -137,8 +140,8 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
 
     private fun createRecognizer(): OfflineRecognizer {
         val whisper = OfflineWhisperModelConfig(
-            encoder = "sherpa-onnx-whisper-tiny/tiny-encoder.int8.onnx",
-            decoder = "sherpa-onnx-whisper-tiny/tiny-decoder.int8.onnx",
+            encoder = "sherpa-onnx-whisper-base/base-encoder.int8.onnx",
+            decoder = "sherpa-onnx-whisper-base/base-decoder.int8.onnx",
             language = "it",
             task = "transcribe",
             tailPaddings = 300,
@@ -148,11 +151,11 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
 
         val model = OfflineModelConfig(
             whisper = whisper,
-            numThreads = 2,
+            numThreads = 4,
             debug = false,
             provider = "cpu",
             modelType = "whisper",
-            tokens = "sherpa-onnx-whisper-tiny/tiny-tokens.txt",
+            tokens = "sherpa-onnx-whisper-base/base-tokens.txt",
         )
 
         val config = OfflineRecognizerConfig(
@@ -170,9 +173,9 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
 
     private fun verifyModelAssets() {
         val required = arrayOf(
-            "sherpa-onnx-whisper-tiny/tiny-encoder.int8.onnx",
-            "sherpa-onnx-whisper-tiny/tiny-decoder.int8.onnx",
-            "sherpa-onnx-whisper-tiny/tiny-tokens.txt",
+            "sherpa-onnx-whisper-base/base-encoder.int8.onnx",
+            "sherpa-onnx-whisper-base/base-decoder.int8.onnx",
+            "sherpa-onnx-whisper-base/base-tokens.txt",
         )
         for (path in required) {
             try {
@@ -185,7 +188,7 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
         }
     }
 
-    /** Remove DC only. Do not amplify noise before ASR. */
+    /** Remove DC offset only. Never boost room noise before ASR. */
     private fun prepareAudio(samples: FloatArray): Pair<Double, Float> {
         if (samples.isEmpty()) return 0.0 to 0f
 
@@ -205,21 +208,40 @@ internal class WhisperTranscriber(private val assets: AssetManager) {
     }
 
     /**
-     * Blocks the classic Whisper failure where one sentence is repeated over
-     * and over. It does not alter normal text; it only rejects a chunk when the
-     * same substantial clause appears at least three times.
+     * Reject both repeated sentences and repeated word sequences inside one long
+     * sentence, e.g. "una specie di essere ... una specie di essere ...".
      */
     private fun looksLikeRunawayRepetition(text: String): Boolean {
-        val parts = text
+        val normalized = text
+            .lowercase(Locale.ITALY)
+            .replace(Regex("[^a-zà-ÿ0-9' ]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (normalized.isBlank()) return false
+
+        val words = normalized.split(' ').filter { it.isNotBlank() }
+        if (words.size >= 12) {
+            for (n in 3..7) {
+                if (words.size < n * 3) continue
+                val counts = HashMap<String, Int>()
+                for (i in 0..words.size - n) {
+                    val gram = words.subList(i, i + n).joinToString(" ")
+                    val c = (counts[gram] ?: 0) + 1
+                    counts[gram] = c
+                    if (c >= 3) return true
+                }
+            }
+        }
+
+        val clauses = text
             .split(Regex("[.!?;\\n]|\\s+-\\s+"))
             .map { it.trim().lowercase(Locale.ITALY).replace(Regex("\\s+"), " ") }
             .filter { it.length >= 18 && it.split(' ').size >= 4 }
-        if (parts.size < 3) return false
         val counts = HashMap<String, Int>()
-        for (part in parts) {
-            val n = (counts[part] ?: 0) + 1
-            counts[part] = n
-            if (n >= 3) return true
+        for (clause in clauses) {
+            val c = (counts[clause] ?: 0) + 1
+            counts[clause] = c
+            if (c >= 3) return true
         }
         return false
     }
