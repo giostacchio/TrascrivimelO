@@ -2,6 +2,13 @@ name: Build Trascrivimelo APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - '.github/workflows/build-fixed-apk.yml'
 
 permissions:
   contents: write
@@ -9,5 +16,72 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - run: echo "Automatic build temporarily paused while switching ASR engine."
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform 34
+        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+
+      - name: Install Gradle 8.7
+        run: |
+          curl -L --fail --retry 3 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          sudo unzip -q /tmp/gradle.zip -d /opt
+          echo '/opt/gradle-8.7/bin' >> "$GITHUB_PATH"
+
+      - name: Download official Vosk Italian Android model
+        run: |
+          rm -rf app/src/main/assets /tmp/vosk-it
+          mkdir -p app/src/main/assets /tmp/vosk-it
+          curl -L --fail --retry 3 \
+            -o /tmp/vosk-it.zip \
+            https://alphacephei.com/vosk/models/vosk-model-small-it-0.22.zip
+          unzip -q /tmp/vosk-it.zip -d app/src/main/assets
+          test -f app/src/main/assets/vosk-model-small-it-0.22/am/final.mdl
+          test -f app/src/main/assets/vosk-model-small-it-0.22/conf/model.conf
+          du -sh app/src/main/assets/vosk-model-small-it-0.22
+
+      - name: Build APK
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Prepare APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/Trascrivi_Offline_v2.0_VOSK_IT.apk
+          sha256sum dist/Trascrivi_Offline_v2.0_VOSK_IT.apk | tee dist/SHA256.txt
+          ls -lh dist/Trascrivi_Offline_v2.0_VOSK_IT.apk
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trascrivi-Offline-v2.0-VOSK-IT
+          path: |
+            dist/Trascrivi_Offline_v2.0_VOSK_IT.apk
+            dist/SHA256.txt
+          retention-days: 30
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES='v2.0: cambio completo di motore ASR. Whisper e sherpa-onnx sono stati rimossi. La trascrizione offline italiana ora usa Vosk/Kaldi con il modello ufficiale vosk-model-small-it-0.22, pensato anche per Android. L audio viene convertito in PCM16 mono 16 kHz e passato in streaming a Vosk, con timestamp reali delle parole e senza generazione libera tipica delle allucinazioni Whisper.'
+          if gh release view V2.0 >/dev/null 2>&1; then
+            gh release upload V2.0 dist/Trascrivi_Offline_v2.0_VOSK_IT.apk dist/SHA256.txt --clobber
+          else
+            gh release create V2.0 \
+              dist/Trascrivi_Offline_v2.0_VOSK_IT.apk \
+              dist/SHA256.txt \
+              --target main \
+              --title 'Trascrivimelo v2.0 Vosk Italiano' \
+              --notes "$NOTES"
+          fi
