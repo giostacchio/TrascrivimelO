@@ -11,8 +11,8 @@ android {
         applicationId 'it.trascrivioffline.app'
         minSdk 23
         targetSdk 34
-        versionCode 7
-        versionName '1.6.0'
+        versionCode 8
+        versionName '2.0.0'
 
         ndk {
             abiFilters 'arm64-v8a'
@@ -49,7 +49,5 @@ android {
 }
 
 dependencies {
-    implementation('com.github.k2-fsa:sherpa-onnx:v1.13.7') {
-        exclude group: 'com.github.k2-fsa.sherpa-onnx', module: 'sherpa-onnx-jvm'
-    }
+    implementation 'com.alphacephei:vosk-android:0.3.47'
 }
