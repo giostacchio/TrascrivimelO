@@ -36,7 +36,7 @@ class MainActivity : Activity() {
         private const val REQUEST_AUDIO = 1001
         private const val REQUEST_SAVE = 1002
         private const val PREVIEW_LIMIT = 120_000
-        private const val RECOVERY_FILE = "trascrizione_recupero.txt"
+        private const val RECOVERY_FILE = "trascrizione_recupero_vosk.txt"
     }
 
     private lateinit var chooseButton: Button
@@ -98,7 +98,7 @@ class MainActivity : Activity() {
         }
 
         page.addView(text("Trascrivimelo", 28f, Color.rgb(28, 45, 54), true))
-        page.addView(text("Trascrizione italiana offline — nessun credito e nessun servizio esterno", 14f, Color.rgb(80, 86, 88)).apply {
+        page.addView(text("Trascrizione italiana offline — motore Vosk, nessun credito e nessun servizio esterno", 14f, Color.rgb(80, 86, 88)).apply {
             setPadding(0, dp(4), 0, dp(18))
         })
 
@@ -117,9 +117,7 @@ class MainActivity : Activity() {
             cancelled.set(true)
             statusView.text = "Interruzione in corso…"
             cancelButton.isEnabled = false
-        }.apply {
-            visibility = View.GONE
-        }
+        }.apply { visibility = View.GONE }
         page.addView(cancelButton)
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -134,7 +132,7 @@ class MainActivity : Activity() {
         statusView = text("Pronto", 14f, Color.rgb(36, 104, 89), true)
         page.addView(statusView)
 
-        resultView = text("Qui comparirà il testo reale della registrazione.", 15f, Color.rgb(48, 52, 53)).apply {
+        resultView = text("Qui comparirà il testo riconosciuto dalla registrazione.", 15f, Color.rgb(48, 52, 53)).apply {
             setTextIsSelectable(true)
             setLineSpacing(0f, 1.15f)
             setPadding(dp(14), dp(14), dp(14), dp(14))
@@ -154,7 +152,7 @@ class MainActivity : Activity() {
         actions.addView(saveButton, LinearLayout.LayoutParams(0, dp(54), 1f).apply { setMargins(dp(5), dp(12), 0, 0) })
         page.addView(actions)
 
-        page.addView(text("Versione 1.3 FIX: Whisper trascrive direttamente tutto l'audio. La separazione delle voci non può più impedire la trascrizione.", 12f, Color.rgb(105, 108, 108)).apply {
+        page.addView(text("Versione 2.0: motore Vosk/Kaldi italiano. Whisper è stato rimosso completamente.", 12f, Color.rgb(105, 108, 108)).apply {
             setPadding(0, dp(20), 0, 0)
         })
 
@@ -180,6 +178,7 @@ class MainActivity : Activity() {
         selectedUri = uri
         selectedName = displayName(uri)
         transcript = ""
+        File(filesDir, RECOVERY_FILE).delete()
         fileView.text = selectedName
         fileView.setTextColor(Color.rgb(36, 104, 89))
         resultView.text = "File pronto. Tocca “Trascrivi ora”."
@@ -199,7 +198,7 @@ class MainActivity : Activity() {
         setRunningUi(true)
         progressBar.progress = 1
         statusView.text = "Preparazione dell’audio…"
-        resultView.text = "Conversione e trascrizione in corso. Tieni l’app aperta."
+        resultView.text = "Conversione e riconoscimento in corso. Tieni l’app aperta."
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         worker.execute {
@@ -216,8 +215,7 @@ class MainActivity : Activity() {
                 recovery.writeText(header, Charsets.UTF_8)
                 transcript = header
 
-                val transcriber = WhisperTranscriber(assets)
-                val chunks = transcriber.transcribe(
+                val chunks = VoskTranscriber(this).transcribe(
                     audio = decoded,
                     cancelled = cancelled,
                     onProgress = { p, message -> updateProgress(p, message) },
@@ -229,11 +227,7 @@ class MainActivity : Activity() {
                     },
                 )
 
-                if (chunks.isEmpty()) {
-                    val line = "\nNessun parlato riconosciuto dal modello.\n"
-                    recovery.appendText(line, Charsets.UTF_8)
-                    transcript += line
-                }
+                require(chunks.isNotEmpty()) { "Nessun parlato italiano riconosciuto." }
                 val complete = "\n--- Trascrizione completata ---\n"
                 recovery.appendText(complete, Charsets.UTF_8)
                 transcript += complete
@@ -380,7 +374,7 @@ class MainActivity : Activity() {
         try {
             transcript = file.readText(Charsets.UTF_8)
             resultView.text = preview(transcript)
-            statusView.text = "Recuperata l’ultima trascrizione"
+            statusView.text = "Recuperata l’ultima trascrizione Vosk"
             copyButton.isEnabled = true
             saveButton.isEnabled = true
         } catch (_: Throwable) { }
@@ -393,10 +387,10 @@ class MainActivity : Activity() {
         val raw = t.message.orEmpty()
         return when {
             t is OutOfMemoryError -> "Memoria insufficiente. Chiudi le altre app e riprova."
-            raw.contains("model", true) || raw.contains("onnx", true) -> "Il modello offline non si è caricato correttamente: $raw"
-            raw.contains("codec", true) || raw.contains("audio", true) -> "Non riesco a leggere questa registrazione: $raw"
+            raw.contains("Vosk", true) || raw.contains("modello", true) -> "Problema nel motore offline italiano: $raw"
+            raw.contains("PCM", true) || raw.contains("audio", true) -> "Problema nella lettura dell'audio: $raw"
             raw.isNotBlank() -> raw
-            else -> "Errore ${t.javaClass.simpleName}"
+            else -> "Errore imprevisto durante la trascrizione."
         }
     }
 
@@ -405,7 +399,6 @@ class MainActivity : Activity() {
         isAllCaps = false
         textSize = 15f
         setOnClickListener { action() }
-        minHeight = dp(54)
     }
 
     private fun text(value: String, size: Float, color: Int, bold: Boolean = false): TextView = TextView(this).apply {
