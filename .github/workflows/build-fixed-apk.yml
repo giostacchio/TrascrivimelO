@@ -1,14 +1,7 @@
-name: Build fixed Trascrivimelo APK
+name: Build Trascrivimelo APK
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'app/**'
-      - 'build.gradle'
-      - 'settings.gradle'
-      - '.github/workflows/build-fixed-apk.yml'
 
 permissions:
   contents: write
@@ -16,78 +9,5 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android platform 34
-        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
-
-      - name: Install Gradle 8.7
-        run: |
-          curl -L --fail --retry 3 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
-          sudo unzip -q /tmp/gradle.zip -d /opt
-          echo '/opt/gradle-8.7/bin' >> "$GITHUB_PATH"
-
-      - name: Download official Whisper base model
-        run: |
-          rm -rf /tmp/whisper app/src/main/assets
-          mkdir -p /tmp/whisper app/src/main/assets/sherpa-onnx-whisper-base
-          curl -L --fail --retry 3 \
-            -o /tmp/whisper.tar.bz2 \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2
-          tar -xjf /tmp/whisper.tar.bz2 -C /tmp/whisper
-          MODEL_DIR="$(find /tmp/whisper -type d -name 'sherpa-onnx-whisper-base' | head -n 1)"
-          test -n "$MODEL_DIR"
-          cp "$MODEL_DIR/base-encoder.int8.onnx" app/src/main/assets/sherpa-onnx-whisper-base/
-          cp "$MODEL_DIR/base-decoder.int8.onnx" app/src/main/assets/sherpa-onnx-whisper-base/
-          cp "$MODEL_DIR/base-tokens.txt" app/src/main/assets/sherpa-onnx-whisper-base/
-          test -s app/src/main/assets/sherpa-onnx-whisper-base/base-encoder.int8.onnx
-          test -s app/src/main/assets/sherpa-onnx-whisper-base/base-decoder.int8.onnx
-          test -s app/src/main/assets/sherpa-onnx-whisper-base/base-tokens.txt
-          ls -lh app/src/main/assets/sherpa-onnx-whisper-base/
-
-      - name: Build APK
-        run: gradle --no-daemon --stacktrace :app:assembleDebug
-
-      - name: Prepare APK
-        run: |
-          mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/Trascrivi_Offline_v1.6_BASE_FIX.apk
-          sha256sum dist/Trascrivi_Offline_v1.6_BASE_FIX.apk | tee dist/SHA256.txt
-          ls -lh dist/Trascrivi_Offline_v1.6_BASE_FIX.apk
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Trascrivi-Offline-v1.6-BASE-FIX
-          path: |
-            dist/Trascrivi_Offline_v1.6_BASE_FIX.apk
-            dist/SHA256.txt
-          retention-days: 30
-
-      - name: Publish fixed release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          NOTES='v1.6: verificato il file reale Registrazione2026-09-03 09-55-36.m4a. Il file è un AAC mono 44.1 kHz valido e contiene segnale audio reale; dopo la correzione PCM il limite principale resta Whisper Tiny, che allucina su questa registrazione. Questa build passa a Whisper Base multilingue ufficiale, forza italiano, usa blocchi da 20 secondi, non amplifica il rumore e blocca anche ripetizioni patologiche interne alla stessa frase.'
-          if gh release view V1.6 >/dev/null 2>&1; then
-            gh release upload V1.6 dist/Trascrivi_Offline_v1.6_BASE_FIX.apk dist/SHA256.txt --clobber
-          else
-            gh release create V1.6 \
-              dist/Trascrivi_Offline_v1.6_BASE_FIX.apk \
-              dist/SHA256.txt \
-              --target main \
-              --title 'Trascrivimelo v1.6 Whisper Base' \
-              --notes "$NOTES"
-          fi
+      - run: echo "Automatic build temporarily paused while switching ASR engine."
